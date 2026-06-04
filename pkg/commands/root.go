@@ -21,6 +21,7 @@ var (
 	terseOutput          bool
 	persistConnection    bool
 	forceCloseConnection bool
+	useSessionBus        bool
 )
 
 var rootCmd = &cobra.Command{
@@ -38,10 +39,11 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&terseOutput, "terse", "t", false, "output only the queried value with no decoration")
 	rootCmd.PersistentFlags().BoolVar(&persistConnection, "persist-conn", false, "don't close the connection to the gamepad after the command exits")
 	rootCmd.PersistentFlags().BoolVar(&forceCloseConnection, "close-conn", false, "always close the connection to the gamepad after the command exits")
+	rootCmd.PersistentFlags().BoolVar(&useSessionBus, "session-bus", false, "connect to DBus session bus (not recommended)")
 }
 
 func connectDBus() error {
-	cl, err := client.Dial()
+	cl, err := client.Dial(useSessionBus)
 	if err != nil {
 		return err
 	}

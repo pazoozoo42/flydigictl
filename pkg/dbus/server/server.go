@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pipe01/flydigictl/pkg/dbus/pb"
 	"github.com/pipe01/flydigictl/pkg/flydigi"
@@ -87,16 +89,19 @@ func (s *Server) GetServerVersion() (string, *dbus.Error) {
 }
 
 func (s *Server) DumpConfiguration(noColor bool) (string, *dbus.Error) {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
 	if err := s.checkConnected(); err != nil {
 		return "", err
 	}
 
-	conf, err := s.gp.GetConfig()
+	conf, err := s.gp.GetConfig(ctx)
 	if err != nil {
 		return "", makeError(common.ErrorGamepadReadingFault, err)
 	}
 
-	conf.Basic.NewLedConfig, err = s.gp.GetLEDConfig()
+	conf.Basic.NewLedConfig, err = s.gp.GetLEDConfig(ctx)
 	if err != nil {
 		return "", makeError(common.ErrorGamepadReadingFault, err)
 	}
@@ -112,11 +117,14 @@ func (s *Server) DumpConfiguration(noColor bool) (string, *dbus.Error) {
 }
 
 func (s *Server) GetConfiguration() ([]byte, *dbus.Error) {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
 	if err := s.checkConnected(); err != nil {
 		return nil, err
 	}
 
-	conf, err := s.gp.GetConfig()
+	conf, err := s.gp.GetConfig(ctx)
 	if err != nil {
 		return nil, makeError(common.ErrorGamepadReadingFault, err)
 	}
@@ -132,6 +140,9 @@ func (s *Server) GetConfiguration() ([]byte, *dbus.Error) {
 }
 
 func (s *Server) SetConfiguration(data []byte) *dbus.Error {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
 	if err := s.checkConnected(); err != nil {
 		return err
 	}
@@ -143,14 +154,14 @@ func (s *Server) SetConfiguration(data []byte) *dbus.Error {
 		return makeError(common.ErrorMarshallingFault, err)
 	}
 
-	gpConf, err := s.gp.GetConfig()
+	gpConf, err := s.gp.GetConfig(ctx)
 	if err != nil {
 		return makeError(common.ErrorGamepadReadingFault, err)
 	}
 
 	conf.ApplyTo(gpConf)
 
-	err = s.gp.SaveConfig(gpConf)
+	err = s.gp.SaveConfig(ctx, gpConf)
 	if err != nil {
 		return makeError(common.ErrorGamepadWritingFault, err)
 	}
@@ -159,11 +170,14 @@ func (s *Server) SetConfiguration(data []byte) *dbus.Error {
 }
 
 func (s *Server) GetLEDConfiguration() ([]byte, *dbus.Error) {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
 	if err := s.checkConnected(); err != nil {
 		return nil, err
 	}
 
-	conf, err := s.gp.GetLEDConfig()
+	conf, err := s.gp.GetLEDConfig(ctx)
 	if err != nil {
 		return nil, makeError(common.ErrorGamepadReadingFault, err)
 	}
@@ -179,6 +193,9 @@ func (s *Server) GetLEDConfiguration() ([]byte, *dbus.Error) {
 }
 
 func (s *Server) SetLEDConfiguration(data []byte) *dbus.Error {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
 	if err := s.checkConnected(); err != nil {
 		return err
 	}
@@ -190,14 +207,14 @@ func (s *Server) SetLEDConfiguration(data []byte) *dbus.Error {
 		return makeError(common.ErrorMarshallingFault, err)
 	}
 
-	ledConf, err := s.gp.GetLEDConfig()
+	ledConf, err := s.gp.GetLEDConfig(ctx)
 	if err != nil {
 		return makeError(common.ErrorGamepadReadingFault, err)
 	}
 
 	conf.ApplyTo(ledConf)
 
-	err = s.gp.SaveLEDConfig(ledConf)
+	err = s.gp.SaveLEDConfig(ctx, ledConf)
 	if err != nil {
 		return makeError(common.ErrorGamepadWritingFault, err)
 	}
@@ -206,11 +223,14 @@ func (s *Server) SetLEDConfiguration(data []byte) *dbus.Error {
 }
 
 func (s *Server) GetDeviceInfo() ([]byte, *dbus.Error) {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
 	if err := s.checkConnected(); err != nil {
 		return nil, err
 	}
 
-	info, err := s.gp.GetGamepadInfo()
+	info, err := s.gp.GetGamepadInfo(ctx)
 	if err != nil {
 		return nil, makeError(common.ErrorGamepadWritingFault, err)
 	}
@@ -231,8 +251,15 @@ func (s *Server) GetDeviceInfo() ([]byte, *dbus.Error) {
 	return data, nil
 }
 
-func (s *Server) Listen() error {
-	conn, err := dbus.ConnectSystemBus()
+func (s *Server) Listen(useSessionBus bool) error {
+	var connector func(opts ...dbus.ConnOption) (*dbus.Conn, error)
+	if useSessionBus {
+		connector = dbus.ConnectSessionBus
+	} else {
+		connector = dbus.ConnectSystemBus
+	}
+
+	conn, err := connector()
 	if err != nil {
 		return fmt.Errorf("connect to system bus: %w", err)
 	}
@@ -317,4 +344,8 @@ func makeError(name string, err error) *dbus.Error {
 		errstr = err.Error()
 	}
 	return dbus.NewError(name, []interface{}{errstr})
+}
+
+func timeoutContext() (ctx context.Context, cancel func()) {
+	return context.WithTimeout(context.Background(), 15*time.Second)
 }

@@ -1,6 +1,7 @@
 package xinput
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync/atomic"
@@ -28,8 +29,8 @@ const (
 )
 
 type protocolXInput struct {
-	in     io.Reader
-	out    io.Writer
+	in     *gousb.InEndpoint
+	out    *gousb.OutEndpoint
 	closer io.Closer
 
 	isClosed       atomic.Bool
@@ -153,7 +154,7 @@ func (d *protocolXInput) readLoop() {
 }
 
 func (d *protocolXInput) resolveUsbData(p []byte) (protocol.Message, bool) {
-	if p[14] == 165 {
+	if p[14] == 0xA5 {
 		switch p[15] {
 		case 16:
 			return protocol.MessageGamePadInfo{
@@ -215,34 +216,34 @@ func (d *protocolXInput) resolveUsbData(p []byte) (protocol.Message, bool) {
 	return nil, false
 }
 
-func (d *protocolXInput) Send(cmd protocol.Command) error {
+func (d *protocolXInput) Send(ctx context.Context, cmd protocol.Command) error {
 	switch cmd := cmd.(type) {
 	case protocol.CommandGetDongleVersion:
-		return d.sendCommand(commandGetDongleVersion)
+		return d.sendCommand(ctx, commandGetDongleVersion)
 
 	case protocol.CommandGetDeviceInfo:
-		return d.sendCommand(commandGetDeviceInfo)
+		return d.sendCommand(ctx, commandGetDeviceInfo)
 
 	case protocol.CommandReadConfig:
 		d.configReader.Reset()
-		return d.sendCommand(commandReadConfig, cmd.ConfigID)
+		return d.sendCommand(ctx, commandReadConfig, cmd.ConfigID)
 
 	case protocol.CommandReadLEDConfig:
 		d.ledConfigReader.Reset()
-		return d.sendCommand(commandReadLEDConfig, cmd.ConfigID)
+		return d.sendCommand(ctx, commandReadLEDConfig, cmd.ConfigID)
 
 	case protocol.CommandSendConfig:
-		return d.sendConfig(cmd.Data, cmd.ConfigID, false)
+		return d.sendConfig(ctx, cmd.Data, cmd.ConfigID, false)
 
 	case protocol.CommandSendLEDConfig:
-		return d.sendConfig(cmd.Data, cmd.ConfigID, true)
+		return d.sendConfig(ctx, cmd.Data, cmd.ConfigID, true)
 
 	default:
 		return protocol.ErrUnknownCommand
 	}
 }
 
-func (d *protocolXInput) sendCommand(cmd byte, args ...byte) error {
+func (d *protocolXInput) sendCommand(ctx context.Context, cmd byte, args ...byte) error {
 	log.Debug().Uint8("cmd", cmd).Bytes("args", args).Msg("sending command")
 
 	pkg := make([]byte, 15)
@@ -250,11 +251,11 @@ func (d *protocolXInput) sendCommand(cmd byte, args ...byte) error {
 	pkg[1] = cmd
 	copy(pkg[2:], args)
 
-	_, err := d.out.Write(crcData(pkg))
+	_, err := d.out.WriteContext(ctx, crcData(pkg))
 	return err
 }
 
-func (g *protocolXInput) sendConfig(data []byte, configID byte, isLED bool) error {
+func (g *protocolXInput) sendConfig(ctx context.Context, data []byte, configID byte, isLED bool) error {
 	var chunks [][]byte
 	if isLED {
 		chunks = getLEDConfigDataParcels(data, configID)
@@ -262,5 +263,5 @@ func (g *protocolXInput) sendConfig(data []byte, configID byte, isLED bool) erro
 		chunks = getConfigDataParcels(data, configID)
 	}
 
-	return g.configWriter.Send(chunks, 3, 3*time.Second)
+	return g.configWriter.Send(ctx, chunks, 3, 3*time.Second)
 }

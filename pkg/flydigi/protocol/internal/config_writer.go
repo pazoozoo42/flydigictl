@@ -1,12 +1,19 @@
 package internal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 )
+
+type writerContext interface {
+	io.Writer
+
+	WriteContext(ctx context.Context, p []byte) (int, error)
+}
 
 type ConfigWriter struct {
 	w io.Writer
@@ -33,7 +40,7 @@ func (cw *ConfigWriter) Ack(n int) {
 	}
 }
 
-func (cw *ConfigWriter) Send(chunks [][]byte, maxRetries int, chunkTimeout time.Duration) error {
+func (cw *ConfigWriter) Send(ctx context.Context, chunks [][]byte, maxRetries int, chunkTimeout time.Duration) error {
 	cw.lock.Lock()
 	cw.isSending = true
 
@@ -49,7 +56,12 @@ func (cw *ConfigWriter) Send(chunks [][]byte, maxRetries int, chunkTimeout time.
 		for !success && retriesLeft > 0 {
 			retriesLeft--
 
-			_, err := cw.w.Write(chunk)
+			var err error
+			if ctxw, ok := cw.w.(writerContext); ok {
+				_, err = ctxw.WriteContext(ctx, chunk)
+			} else {
+				_, err = cw.w.Write(chunk)
+			}
 			if err != nil {
 				return fmt.Errorf("write chunk: %w", err)
 			}
@@ -63,6 +75,9 @@ func (cw *ConfigWriter) Send(chunks [][]byte, maxRetries int, chunkTimeout time.
 					success = true
 
 				case <-time.After(chunkTimeout):
+
+				case <-ctx.Done():
+					return ctx.Err()
 				}
 
 				break

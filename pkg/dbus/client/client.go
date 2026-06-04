@@ -23,8 +23,15 @@ type Client struct {
 	obj  dbus.BusObject
 }
 
-func Dial() (*Client, error) {
-	conn, err := dbus.ConnectSystemBus()
+func Dial(useSessionBus bool) (*Client, error) {
+	var connector func(opts ...dbus.ConnOption) (*dbus.Conn, error)
+	if useSessionBus {
+		connector = dbus.ConnectSessionBus
+	} else {
+		connector = dbus.ConnectSystemBus
+	}
+
+	conn, err := connector()
 	if err != nil {
 		return nil, fmt.Errorf("connect to system bus: %w", err)
 	}

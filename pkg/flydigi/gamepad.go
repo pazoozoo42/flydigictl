@@ -2,6 +2,7 @@ package flydigi
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -225,7 +226,11 @@ func (g *Gamepad) handleDeviceInfo(msg protocol.MessageGamePadInfo) error {
 		} else {
 			devInfo.ConnectType = FDGConncetWireless
 			devInfo.CpuName = "ch571"
-			g.prot.Send(protocol.CommandGetDongleVersion{})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			g.prot.Send(ctx, protocol.CommandGetDongleVersion{})
 		}
 	}
 
@@ -319,13 +324,13 @@ func (g *Gamepad) handleLEDConfigRead(msg protocol.MessageLEDConfigReadCB) error
 	return nil
 }
 
-func (g *Gamepad) SaveConfig(cfg *config.AllConfigBean) error {
+func (g *Gamepad) SaveConfig(ctx context.Context, cfg *config.AllConfigBean) error {
 	var buf bytes.Buffer
 	config.ConvertByteByGConfig(&buf, cfg)
 
 	log.Info().Int("length", buf.Len()).Msg("saving gamepad configuration")
 
-	if err := g.prot.Send(protocol.CommandSendConfig{
+	if err := g.prot.Send(ctx, protocol.CommandSendConfig{
 		Data:     buf.Bytes(),
 		ConfigID: g.configID,
 	}); err != nil {
@@ -337,7 +342,7 @@ func (g *Gamepad) SaveConfig(cfg *config.AllConfigBean) error {
 	buf.Reset()
 
 	if cfg.Basic.NewLedConfig != nil {
-		if err := g.SaveLEDConfig(cfg.Basic.NewLedConfig); err != nil {
+		if err := g.SaveLEDConfig(ctx, cfg.Basic.NewLedConfig); err != nil {
 			return fmt.Errorf("save led config: %w", err)
 		}
 	}
@@ -345,13 +350,13 @@ func (g *Gamepad) SaveConfig(cfg *config.AllConfigBean) error {
 	return nil
 }
 
-func (g *Gamepad) SaveLEDConfig(cfg *config.NewLedConfigBean) error {
+func (g *Gamepad) SaveLEDConfig(ctx context.Context, cfg *config.NewLedConfigBean) error {
 	var buf bytes.Buffer
 	config.ConvertByteByNewLedConfig(&buf, cfg)
 
 	log.Info().Int("length", buf.Len()).Msg("saving led configuration")
 
-	if err := g.prot.Send(protocol.CommandSendLEDConfig{
+	if err := g.prot.Send(ctx, protocol.CommandSendLEDConfig{
 		Data:     buf.Bytes(),
 		ConfigID: g.configID,
 	}); err != nil {
@@ -363,18 +368,23 @@ func (g *Gamepad) SaveLEDConfig(cfg *config.NewLedConfigBean) error {
 	return nil
 }
 
-func getConfigRetry[T any](prot protocol.Protocol, v *utils.CondValue[T], cmd protocol.Command) (*T, error) {
+func getConfigRetry[T any](ctx context.Context, prot protocol.Protocol, v *utils.CondValue[T], cmd protocol.Command) (*T, error) {
 	if v.Value == nil {
 		retriesLeft := 3
 
 		for retriesLeft > 0 {
-			err := prot.Send(cmd)
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+
+			err := prot.Send(ctx, cmd)
 			if err != nil {
 				return nil, fmt.Errorf("send command: %w", err)
 			}
 
 			select {
 			case <-v.NotifyChan():
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case <-time.After(2 * time.Second):
 				retriesLeft--
 				continue
@@ -389,14 +399,14 @@ func getConfigRetry[T any](prot protocol.Protocol, v *utils.CondValue[T], cmd pr
 	return v.Value, nil
 }
 
-func (g *Gamepad) GetConfig() (*config.AllConfigBean, error) {
-	return getConfigRetry(g.prot, g.currConfig, protocol.CommandReadConfig{ConfigID: g.configID})
+func (g *Gamepad) GetConfig(ctx context.Context) (*config.AllConfigBean, error) {
+	return getConfigRetry(ctx, g.prot, g.currConfig, protocol.CommandReadConfig{ConfigID: g.configID})
 }
 
-func (g *Gamepad) GetLEDConfig() (*config.NewLedConfigBean, error) {
-	return getConfigRetry(g.prot, g.currLEDConfig, protocol.CommandReadLEDConfig{ConfigID: g.configID})
+func (g *Gamepad) GetLEDConfig(ctx context.Context) (*config.NewLedConfigBean, error) {
+	return getConfigRetry(ctx, g.prot, g.currLEDConfig, protocol.CommandReadLEDConfig{ConfigID: g.configID})
 }
 
-func (g *Gamepad) GetGamepadInfo() (*FDGDeviceInfo, error) {
-	return getConfigRetry(g.prot, g.devInfo, protocol.CommandGetDeviceInfo{})
+func (g *Gamepad) GetGamepadInfo(ctx context.Context) (*FDGDeviceInfo, error) {
+	return getConfigRetry(ctx, g.prot, g.devInfo, protocol.CommandGetDeviceInfo{})
 }

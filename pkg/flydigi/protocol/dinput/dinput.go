@@ -1,6 +1,7 @@
 package dinput
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"time"
@@ -101,7 +102,7 @@ func (d *protocolDInput) readLoop() {
 	}
 }
 
-func (d *protocolDInput) Send(cmd protocol.Command) error {
+func (d *protocolDInput) Send(ctx context.Context, cmd protocol.Command) error {
 	switch cmd := cmd.(type) {
 	case protocol.CommandGetDongleVersion:
 		return d.sendCommand(commandGetDongleVersion)
@@ -118,17 +119,17 @@ func (d *protocolDInput) Send(cmd protocol.Command) error {
 		return d.sendCommand(commandReadLEDConfig, cmd.ConfigID)
 
 	case protocol.CommandSendConfig:
-		return d.sendConfig(cmd.Data, cmd.ConfigID, false)
+		return d.sendConfig(ctx, cmd.Data, cmd.ConfigID, false)
 
 	case protocol.CommandSendLEDConfig:
-		return d.sendConfig(cmd.Data, cmd.ConfigID, true)
+		return d.sendConfig(ctx, cmd.Data, cmd.ConfigID, true)
 
 	default:
 		return protocol.ErrUnknownCommand
 	}
 }
 
-func (g *protocolDInput) sendConfig(data []byte, configID byte, isLED bool) error {
+func (g *protocolDInput) sendConfig(ctx context.Context, data []byte, configID byte, isLED bool) error {
 	var chunks [][]byte
 	if isLED {
 		chunks = getLEDConfigDataParcels(data, configID)
@@ -136,7 +137,7 @@ func (g *protocolDInput) sendConfig(data []byte, configID byte, isLED bool) erro
 		chunks = getConfigDataParcels(data, configID)
 	}
 
-	return g.configWriter.Send(chunks, 3, 3*time.Second)
+	return g.configWriter.Send(ctx, chunks, 3, 3*time.Second)
 }
 
 func (d *protocolDInput) sendCommand(cmd byte, args ...byte) error {

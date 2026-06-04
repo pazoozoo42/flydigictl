@@ -1,6 +1,9 @@
 package protocol
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 var (
 	ErrUnknownCommand    = errors.New("unknown command type")
@@ -20,5 +23,5 @@ type Protocol interface {
 	Close() error
 
 	Messages() <-chan Message
-	Send(cmd Command) error
+	Send(ctx context.Context, cmd Command) error
 }

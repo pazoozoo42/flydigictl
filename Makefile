@@ -8,14 +8,15 @@ GIT_COMMIT = $(shell git rev-parse --short HEAD)
 DEB_FULLNAME = $(DEB_NAME)_$(DEB_VERSION)-$(DEB_REVISION)_$(DEB_ARCH)
 
 SRC := .
+GO := go
 
 GO_FLAGS = -ldflags "-X 'github.com/pipe01/flydigictl/pkg/version.Version=$(DEB_VERSION)-$(GIT_COMMIT)'"
 
 bin-daemon:
-	go build $(GO_FLAGS) $(SRC)/cmd/flydigid
+	$(GO) build $(GO_FLAGS) $(SRC)/cmd/flydigid
 
 bin-ctl:
-	go build $(GO_FLAGS) $(SRC)/cmd/flydigictl
+	$(GO) build $(GO_FLAGS) $(SRC)/cmd/flydigictl
 
 deb-clean:
 	rm -rf $(DEB_FULLNAME)

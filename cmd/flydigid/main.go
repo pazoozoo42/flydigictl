@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/pipe01/flydigictl/pkg/dbus/server"
+	"github.com/pipe01/flydigictl/pkg/flydigi"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -15,6 +16,7 @@ import (
 
 func main() {
 	prettyLogging := flag.Bool("pretty-logs", false, "Enable human-readable colored logs")
+	useSessionBus := flag.Bool("session-bus", false, "Use DBus session bus instead of system (not recommended)")
 	flag.Parse()
 
 	if *prettyLogging {
@@ -25,7 +27,7 @@ func main() {
 
 	srv := server.New()
 
-	if err := srv.Listen(); err != nil {
+	if err := srv.Listen(*useSessionBus); err != nil {
 		log.Fatal().Err(err).Msg("failed to start dbus server")
 	}
 }
