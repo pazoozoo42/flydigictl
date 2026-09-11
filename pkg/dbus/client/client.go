@@ -152,6 +152,62 @@ func (c *Client) GetDeviceInfo() (*pb.GamepadInfo, error) {
 	return &info, nil
 }
 
+func (c *Client) GetTakeover() (*pb.TakeoverStatus, error) {
+	var b []byte
+
+	if err := c.call("GetTakeover", nil, &b); err != nil {
+		return nil, c.wrapError(err)
+	}
+
+	var status pb.TakeoverStatus
+
+	if err := proto.Unmarshal(b, &status); err != nil {
+		return nil, fmt.Errorf("unmarshal status: %w", err)
+	}
+
+	return &status, nil
+}
+
+func (c *Client) SetTakeover(enabled bool) (*pb.TakeoverStatus, error) {
+	var b []byte
+
+	if err := c.call("SetTakeover", []any{enabled}, &b); err != nil {
+		return nil, c.wrapError(err)
+	}
+
+	var status pb.TakeoverStatus
+
+	if err := proto.Unmarshal(b, &status); err != nil {
+		return nil, fmt.Errorf("unmarshal status: %w", err)
+	}
+
+	return &status, nil
+}
+
+func (c *Client) GetAutoTakeover() (bool, error) {
+	var enabled bool
+
+	if err := c.call("GetAutoTakeover", nil, &enabled); err != nil {
+		return false, c.wrapError(err)
+	}
+
+	return enabled, nil
+}
+
+func (c *Client) SetAutoTakeover(enabled bool) error {
+	return c.wrapError(c.call("SetAutoTakeover", []any{enabled}))
+}
+
+// Reconnect re-enumerates the controller's USB device (software re-plug). The daemon
+// drops the gamepad connection; call Connect again afterwards.
+func (c *Client) Reconnect() error {
+	return c.wrapError(c.call("Reconnect", nil))
+}
+
+func (c *Client) Calibrate(start bool) error {
+	return c.wrapError(c.call("Calibrate", []any{start}))
+}
+
 func (c *Client) wrapError(err error) error {
 	switch err := err.(type) {
 	case dbus.Error:
@@ -170,8 +226,18 @@ func (c *Client) wrapError(err error) error {
 			msg = "reading from gamepad failed"
 		case common.ErrorGamepadNotFound:
 			msg = "gamepad not found"
+		case common.ErrorUnsupported:
+			msg = "not supported by this gamepad or connection mode"
+		case common.ErrorReconnectFailed:
+			msg = "re-enumerating the usb device failed"
 		default:
 			return err
+		}
+
+		if len(err.Body) > 0 {
+			if detail, ok := err.Body[0].(string); ok && detail != "" {
+				msg += ": " + detail
+			}
 		}
 
 		return FlydigiError{Name: err.Name, Message: msg}

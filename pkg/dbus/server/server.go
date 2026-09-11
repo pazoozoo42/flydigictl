@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -98,12 +100,12 @@ func (s *Server) DumpConfiguration(noColor bool) (string, *dbus.Error) {
 
 	conf, err := s.gp.GetConfig(ctx)
 	if err != nil {
-		return "", makeError(common.ErrorGamepadReadingFault, err)
+		return "", wrapGamepadError(common.ErrorGamepadReadingFault, err)
 	}
 
 	conf.Basic.NewLedConfig, err = s.gp.GetLEDConfig(ctx)
 	if err != nil {
-		return "", makeError(common.ErrorGamepadReadingFault, err)
+		return "", wrapGamepadError(common.ErrorGamepadReadingFault, err)
 	}
 
 	var str strings.Builder
@@ -126,7 +128,7 @@ func (s *Server) GetConfiguration() ([]byte, *dbus.Error) {
 
 	conf, err := s.gp.GetConfig(ctx)
 	if err != nil {
-		return nil, makeError(common.ErrorGamepadReadingFault, err)
+		return nil, wrapGamepadError(common.ErrorGamepadReadingFault, err)
 	}
 
 	prot := pb.ConvertGamepadConfiguration(conf)
@@ -156,7 +158,7 @@ func (s *Server) SetConfiguration(data []byte) *dbus.Error {
 
 	gpConf, err := s.gp.GetConfig(ctx)
 	if err != nil {
-		return makeError(common.ErrorGamepadReadingFault, err)
+		return wrapGamepadError(common.ErrorGamepadReadingFault, err)
 	}
 
 	conf.ApplyTo(gpConf)
@@ -179,7 +181,7 @@ func (s *Server) GetLEDConfiguration() ([]byte, *dbus.Error) {
 
 	conf, err := s.gp.GetLEDConfig(ctx)
 	if err != nil {
-		return nil, makeError(common.ErrorGamepadReadingFault, err)
+		return nil, wrapGamepadError(common.ErrorGamepadReadingFault, err)
 	}
 
 	prot := pb.ConvertLEDConfiguration(conf)
@@ -209,7 +211,7 @@ func (s *Server) SetLEDConfiguration(data []byte) *dbus.Error {
 
 	ledConf, err := s.gp.GetLEDConfig(ctx)
 	if err != nil {
-		return makeError(common.ErrorGamepadReadingFault, err)
+		return wrapGamepadError(common.ErrorGamepadReadingFault, err)
 	}
 
 	conf.ApplyTo(ledConf)
@@ -236,11 +238,23 @@ func (s *Server) GetDeviceInfo() ([]byte, *dbus.Error) {
 	}
 
 	prot := pb.GamepadInfo{
-		DeviceId:       info.DeviceId,
-		BatteryPercent: info.BatteryPercent,
-		ConnectionType: pb.ConnectionType(info.ConnectType),
-		CpuType:        info.CpuType,
-		CpuName:        info.CpuName,
+		DeviceId:        info.DeviceId,
+		BatteryPercent:  info.BatteryPercent,
+		ConnectionType:  pb.ConnectionType(info.ConnectType),
+		CpuType:         info.CpuType,
+		CpuName:         info.CpuName,
+		DeviceCode:      info.DeviceCode,
+		DeviceName:      info.DeviceName,
+		FirmwareVersion: info.FirmwareVersion,
+		DongleVersion:   info.DongleVersion,
+		SiVersion:       info.SIVersion,
+		RfVersion:       info.RFVersion,
+		TriggerVersion:  info.TriggerVersion,
+		ScreenVersion:   info.ScreenVersion,
+		AdcVersion:      info.ADCVersion,
+		ProtocolVersion: int32(info.ProtocolVersion),
+		BatteryState:    pb.BatteryState(info.BatteryState),
+		DeviceMac:       info.DeviceMac,
 	}
 
 	data, err := proto.Marshal(&prot)
@@ -249,6 +263,121 @@ func (s *Server) GetDeviceInfo() ([]byte, *dbus.Error) {
 	}
 
 	return data, nil
+}
+
+func (s *Server) GetTakeover() ([]byte, *dbus.Error) {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
+	if err := s.checkConnected(); err != nil {
+		return nil, err
+	}
+
+	status, err := s.gp.GetTakeover(ctx)
+	if err != nil {
+		return nil, wrapGamepadError(common.ErrorGamepadReadingFault, err)
+	}
+
+	data, err := proto.Marshal(&pb.TakeoverStatus{Enabled: status.Enabled, ControlBy: status.ControlBy})
+	if err != nil {
+		return nil, makeError(common.ErrorMarshallingFault, err)
+	}
+
+	return data, nil
+}
+
+func (s *Server) SetTakeover(enabled bool) ([]byte, *dbus.Error) {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
+	if err := s.checkConnected(); err != nil {
+		return nil, err
+	}
+
+	status, err := s.gp.SetTakeover(ctx, enabled)
+	if err != nil {
+		return nil, wrapGamepadError(common.ErrorGamepadWritingFault, err)
+	}
+
+	log.Info().Bool("enabled", enabled).Msg("third-party takeover setting changed")
+
+	data, err := proto.Marshal(&pb.TakeoverStatus{Enabled: status.Enabled, ControlBy: status.ControlBy})
+	if err != nil {
+		return nil, makeError(common.ErrorMarshallingFault, err)
+	}
+
+	return data, nil
+}
+
+func (s *Server) Calibrate(start bool) *dbus.Error {
+	ctx, cancel := timeoutContext()
+	defer cancel()
+
+	if err := s.checkConnected(); err != nil {
+		return err
+	}
+
+	if err := s.gp.Calibrate(ctx, start); err != nil {
+		return wrapGamepadError(common.ErrorGamepadWritingFault, err)
+	}
+
+	log.Info().Bool("start", start).Msg("calibration command sent")
+
+	return nil
+}
+
+// Reconnect makes the kernel re-enumerate the controller's USB device, which is the same
+// as unplugging it and plugging it back in from Steam's point of view. The gamepad
+// connection is closed as part of this; callers must Connect again afterwards.
+func (s *Server) Reconnect() *dbus.Error {
+	s.connectmu.Lock()
+	defer s.connectmu.Unlock()
+
+	if err := s.checkConnected(); err != nil {
+		return err
+	}
+
+	sysPath, err := s.gp.USBDevicePath()
+	if err != nil {
+		return wrapGamepadError(common.ErrorReconnectFailed, err)
+	}
+
+	if err := s.gp.Close(); err != nil {
+		log.Err(err).Msg("failed to close gamepad before reconnect")
+	}
+	s.gp = nil
+
+	if err := flydigi.ReenumerateUSB(sysPath); err != nil {
+		return makeError(common.ErrorReconnectFailed, err)
+	}
+
+	return nil
+}
+
+// AutoTakeoverMarker is created when the takeover setting should be re-applied
+// on every hotplug (see etc/70-flydigi.rules and flydigictl-takeover.service).
+const AutoTakeoverMarker = "/etc/flydigictl/auto-takeover"
+
+func (s *Server) GetAutoTakeover() (bool, *dbus.Error) {
+	_, err := os.Stat(AutoTakeoverMarker)
+	return err == nil, nil
+}
+
+func (s *Server) SetAutoTakeover(enabled bool) *dbus.Error {
+	if enabled {
+		if err := os.MkdirAll(filepath.Dir(AutoTakeoverMarker), 0o755); err != nil {
+			return dbus.MakeFailedError(err)
+		}
+		if err := os.WriteFile(AutoTakeoverMarker, []byte("on\n"), 0o644); err != nil {
+			return dbus.MakeFailedError(err)
+		}
+	} else if err := os.Remove(AutoTakeoverMarker); err != nil && !os.IsNotExist(err) {
+		return dbus.MakeFailedError(err)
+	}
+
+	log.Info().Bool("enabled", enabled).Msg("auto takeover re-apply changed")
+
+	return nil
 }
 
 func (s *Server) Listen(useSessionBus bool) error {
@@ -318,6 +447,40 @@ func (s *Server) Listen(useSessionBus bool) error {
 							{Direction: "out", Type: "ay"},
 						},
 					},
+					{
+						Name: "GetTakeover",
+						Args: []introspect.Arg{
+							{Direction: "out", Type: "ay"},
+						},
+					},
+					{
+						Name: "SetTakeover",
+						Args: []introspect.Arg{
+							{Direction: "in", Type: "b", Name: "enabled"},
+							{Direction: "out", Type: "ay"},
+						},
+					},
+					{
+						Name: "Calibrate",
+						Args: []introspect.Arg{
+							{Direction: "in", Type: "b", Name: "start"},
+						},
+					},
+					{
+						Name: "Reconnect",
+					},
+					{
+						Name: "GetAutoTakeover",
+						Args: []introspect.Arg{
+							{Direction: "out", Type: "b"},
+						},
+					},
+					{
+						Name: "SetAutoTakeover",
+						Args: []introspect.Arg{
+							{Direction: "in", Type: "b", Name: "enabled"},
+						},
+					},
 				},
 			},
 		},
@@ -336,6 +499,14 @@ func (s *Server) Listen(useSessionBus bool) error {
 
 	log.Info().Msg("connected to dbus")
 	select {}
+}
+
+// wrapGamepadError maps protocol-level errors to DBus error names.
+func wrapGamepadError(fallback string, err error) *dbus.Error {
+	if errors.Is(err, protocol.ErrUnsupported) {
+		return makeError(common.ErrorUnsupported, err)
+	}
+	return makeError(fallback, err)
 }
 
 func makeError(name string, err error) *dbus.Error {

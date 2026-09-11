@@ -1,0 +1,7 @@
+# Flydigi controllers (new protocol: Vader 5 Pro, Apex 5, Apex 6, ...).
+# Runs `flydigictl hotplug` on connect: re-applies "Allow third-party apps to take over
+# mappings" when /etc/flydigictl/auto-takeover exists and makes Steam re-detect the
+# controller if it only got picked up as a plain XInput gamepad.
+# Matches interface 0 rather than the device so that it also fires on a software re-plug
+# (`flydigictl reconnect`), which re-creates the interfaces but not the device.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceNumber}=="00", ATTRS{idVendor}=="37d7", TAG+="systemd", ENV{SYSTEMD_WANTS}+="flydigictl-hotplug.service"

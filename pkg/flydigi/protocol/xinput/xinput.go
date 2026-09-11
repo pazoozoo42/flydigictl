@@ -1,19 +1,28 @@
+// Package xinput implements the legacy (V1) Flydigi protocol over the vendor
+// specific Xbox 360 interface exposed by controllers in XInput mode
+// (VID 045e, PID 028e, interface 0, endpoints 0x81 IN / 0x05 OUT).
 package xinput
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync/atomic"
 	"time"
 
 	"github.com/pipe01/flydigictl/pkg/flydigi/protocol"
 	"github.com/pipe01/flydigictl/pkg/flydigi/protocol/internal"
-	"github.com/pipe01/flydigictl/pkg/utils"
+	"github.com/pipe01/flydigictl/pkg/flydigi/protocol/usbfs"
 
-	"github.com/google/gousb"
 	"github.com/rs/zerolog/log"
-	"pault.ag/go/modprobe"
+)
+
+const (
+	VendorID  = 0x045e
+	ProductID = 0x028e
+	Interface = 0
+
+	endpointIn  = 0x81
+	endpointOut = 0x05
 )
 
 const (
@@ -26,15 +35,14 @@ const (
 	commandReadConfig       = 33
 	commandGetDeviceInfo    = 16
 	commandReadLEDConfig    = 38
+	commandCalibration      = 20
 )
 
 type protocolXInput struct {
-	in     *gousb.InEndpoint
-	out    *gousb.OutEndpoint
-	closer io.Closer
+	dev  *usbfs.Device
+	info usbfs.DeviceInfo
 
-	isClosed       atomic.Bool
-	xpadWasEnabled bool
+	isClosed atomic.Bool
 
 	msgch chan protocol.Message
 
@@ -43,14 +51,17 @@ type protocolXInput struct {
 	configWriter *internal.ConfigWriter
 }
 
+// outWriter adapts the OUT endpoint to io.Writer for the config writer.
+type outWriter struct {
+	p *protocolXInput
+}
+
+func (w outWriter) Write(p []byte) (int, error) {
+	return w.p.dev.Transfer(endpointOut, p, 1000)
+}
+
 func Open() (protocol.Protocol, error) {
-	ctx := gousb.NewContext()
-
-	var closers utils.MultiCloser
-
-	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
-		return desc.Vendor == 0x045e && desc.Product == 0x028e
-	})
+	devs, err := usbfs.Find(VendorID, ProductID)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate devices: %w", err)
 	}
@@ -61,50 +72,27 @@ func Open() (protocol.Protocol, error) {
 		return nil, protocol.ErrGamepadNotPresent
 	}
 
-	dev := devs[0]
-	closers.AddCloser(dev)
-
-	cfg, err := dev.Config(1)
+	dev, err := usbfs.Open(devs[0].Path, Interface)
 	if err != nil {
-		return nil, fmt.Errorf("open configuration: %w", err)
-	}
-	closers.AddCloser(cfg)
-
-	err = modprobe.Remove("xpad")
-	xpadWasEnabled := err == nil
-	if xpadWasEnabled {
-		log.Debug().Msg("unloaded xpad module")
-	}
-
-	intf, err := cfg.Interface(0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open interface: %w", err)
-	}
-	closers.AddFunc(intf.Close)
-
-	outep, err := intf.OutEndpoint(5)
-	if err != nil {
-		return nil, fmt.Errorf("open out endpoint: %w", err)
-	}
-
-	inep, err := intf.InEndpoint(1)
-	if err != nil {
-		return nil, fmt.Errorf("open in endpoint: %w", err)
+		return nil, fmt.Errorf("open usb device: %w", err)
 	}
 
 	p := &protocolXInput{
-		in:              inep,
-		out:             outep,
-		closer:          &closers,
-		xpadWasEnabled:  xpadWasEnabled,
+		dev:             dev,
+		info:            devs[0],
 		msgch:           make(chan protocol.Message, 10),
 		configReader:    internal.NewConfigReader(packageLength, 10),
 		ledConfigReader: internal.NewConfigReader(ledPackageLength, 10),
-		configWriter:    internal.NewConfigWriter(outep),
 	}
+	p.configWriter = internal.NewConfigWriter(outWriter{p})
+
 	go p.readLoop()
 
 	return p, nil
+}
+
+func (d *protocolXInput) USBDevicePath() string {
+	return d.info.SysPath
 }
 
 func (d *protocolXInput) Close() error {
@@ -112,17 +100,11 @@ func (d *protocolXInput) Close() error {
 		return nil
 	}
 
-	err := d.closer.Close()
-	if d.xpadWasEnabled {
-		log.Debug().Msg("loading xpad module")
+	return d.dev.Close()
+}
 
-		err = modprobe.Load("xpad", "")
-		if err != nil {
-			log.Err(err).Msg("failed to load xpad module")
-		}
-	}
-
-	return err
+func (d *protocolXInput) Version() protocol.Version {
+	return protocol.VersionV1
 }
 
 func (d *protocolXInput) Messages() <-chan protocol.Message {
@@ -134,19 +116,23 @@ func (d *protocolXInput) readLoop() {
 
 	defer close(d.msgch)
 
-	for {
-		n, err := d.in.Read(buf)
+	for !d.isClosed.Load() {
+		n, err := d.dev.Transfer(endpointIn, buf, 500)
 		if err != nil {
-			if status, ok := err.(gousb.TransferStatus); !ok || status != gousb.TransferNoDevice {
+			if usbfs.IsTimeout(err) {
+				continue
+			}
+			if !d.isClosed.Load() && !usbfs.IsNoDevice(err) {
 				log.Err(err).Msg("failed to read data from usb")
 			}
-
 			break
 		}
 
-		data := buf[:n]
+		if n < 32 {
+			continue
+		}
 
-		msg, ok := d.resolveUsbData(data)
+		msg, ok := d.resolveUsbData(buf[:n])
 		if ok {
 			d.msgch <- msg
 		}
@@ -173,6 +159,9 @@ func (d *protocolXInput) resolveUsbData(p []byte) (protocol.Message, bool) {
 				FW_L: p[16],
 				FW_H: p[17],
 			}, true
+
+		case commandCalibration:
+			return protocol.MessageAck{Command: commandCalibration, Data: append([]byte(nil), p...)}, true
 
 		case 32:
 			// HandleGamepadConfigId
@@ -238,6 +227,17 @@ func (d *protocolXInput) Send(ctx context.Context, cmd protocol.Command) error {
 	case protocol.CommandSendLEDConfig:
 		return d.sendConfig(ctx, cmd.Data, cmd.ConfigID, true)
 
+	case protocol.CommandCalibrate:
+		// Flydigi Space: { A5, 20, status, ... } with status 1 = start, 2 = finish
+		status := byte(2)
+		if cmd.Start {
+			status = 1
+		}
+		return d.sendCommand(ctx, commandCalibration, status)
+
+	case protocol.CommandGetTakeover, protocol.CommandSetTakeover:
+		return protocol.ErrUnsupported
+
 	default:
 		return protocol.ErrUnknownCommand
 	}
@@ -251,7 +251,7 @@ func (d *protocolXInput) sendCommand(ctx context.Context, cmd byte, args ...byte
 	pkg[1] = cmd
 	copy(pkg[2:], args)
 
-	_, err := d.out.WriteContext(ctx, crcData(pkg))
+	_, err := d.dev.Transfer(endpointOut, crcData(pkg), 1000)
 	return err
 }
 

@@ -1,3 +1,5 @@
+// Package dinput implements the legacy (V1) Flydigi protocol over the HID
+// interface exposed by controllers in DInput mode (VID 04b4, PID 2412, interface 2).
 package dinput
 
 import (
@@ -7,10 +9,16 @@ import (
 	"time"
 
 	"github.com/pipe01/flydigictl/pkg/flydigi/protocol"
+	"github.com/pipe01/flydigictl/pkg/flydigi/protocol/hidraw"
 	"github.com/pipe01/flydigictl/pkg/flydigi/protocol/internal"
 
-	"github.com/karalabe/usb"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	VendorID  = 0x04b4
+	ProductID = 0x2412
+	Interface = 2
 )
 
 const (
@@ -23,15 +31,12 @@ const (
 	commandReadConfig             = 235
 	commandGetDeviceInfoInAndroid = 236
 	commandReadLEDConfig          = 229
+	commandCalibration            = 226
 )
-
-type configTrasmission struct {
-	chunks [][]byte
-	ackch  chan int
-}
 
 type protocolDInput struct {
 	rw    io.ReadWriteCloser
+	info  hidraw.DeviceInfo
 	msgch chan protocol.Message
 
 	configWriter *internal.ConfigWriter
@@ -40,7 +45,9 @@ type protocolDInput struct {
 }
 
 func Open() (protocol.Protocol, error) {
-	devs, err := usb.EnumerateHid(0x04b4, 0x2412)
+	devs, err := hidraw.Find(func(d hidraw.DeviceInfo) bool {
+		return d.VendorID == VendorID && d.ProductID == ProductID && d.Interface == Interface
+	})
 	if err != nil {
 		return nil, fmt.Errorf("enumerate devices: %w", err)
 	}
@@ -49,33 +56,37 @@ func Open() (protocol.Protocol, error) {
 		return nil, protocol.ErrGamepadNotPresent
 	}
 
+	dev, err := hidraw.Open(devs[0].Path)
+	if err != nil {
+		return nil, fmt.Errorf("open hid device: %w", err)
+	}
+
+	log.Debug().Str("path", devs[0].Path).Msg("opened dinput hid device")
+
 	p := &protocolDInput{
+		rw:              dev,
+		info:            devs[0],
 		msgch:           make(chan protocol.Message, 10),
 		configReader:    internal.NewConfigReader(packageLength, 10),
 		ledConfigReader: internal.NewConfigReader(ledPackageLength, 10),
+		configWriter:    internal.NewConfigWriter(dev),
 	}
 
-	for _, d := range devs {
-		if d.Interface == 2 {
-			dev, err := d.Open()
-			if err != nil {
-				return nil, fmt.Errorf("open usb device: %w", err)
-			}
+	go p.readLoop()
 
-			p.rw = dev
-			p.configWriter = internal.NewConfigWriter(dev)
+	return p, nil
+}
 
-			go p.readLoop()
-
-			return p, nil
-		}
-	}
-
-	return nil, protocol.ErrGamepadNotPresent
+func (d *protocolDInput) USBDevicePath() string {
+	return d.info.USBDevice
 }
 
 func (d *protocolDInput) Close() error {
 	return d.rw.Close()
+}
+
+func (d *protocolDInput) Version() protocol.Version {
+	return protocol.VersionV1
 }
 
 func (d *protocolDInput) Messages() <-chan protocol.Message {
@@ -83,7 +94,7 @@ func (d *protocolDInput) Messages() <-chan protocol.Message {
 }
 
 func (d *protocolDInput) readLoop() {
-	buf := make([]byte, 32)
+	buf := make([]byte, 64)
 
 	defer close(d.msgch)
 
@@ -91,6 +102,10 @@ func (d *protocolDInput) readLoop() {
 		n, err := d.rw.Read(buf)
 		if err != nil {
 			break
+		}
+
+		if n < 32 {
+			continue
 		}
 
 		data := buf[:n]
@@ -123,6 +138,17 @@ func (d *protocolDInput) Send(ctx context.Context, cmd protocol.Command) error {
 
 	case protocol.CommandSendLEDConfig:
 		return d.sendConfig(ctx, cmd.Data, cmd.ConfigID, true)
+
+	case protocol.CommandCalibrate:
+		// Flydigi Space: { 5, 226, status, crc } with status 1 = start, 2 = finish
+		status := byte(2)
+		if cmd.Start {
+			status = 1
+		}
+		return d.sendCommand(commandCalibration, status, 5+commandCalibration+status)
+
+	case protocol.CommandGetTakeover, protocol.CommandSetTakeover:
+		return protocol.ErrUnsupported
 
 	default:
 		return protocol.ErrUnknownCommand
@@ -210,6 +236,10 @@ func (d *protocolDInput) resolveUsbData(p []byte) (msg protocol.Message, ok bool
 			CPUType:          p[12],
 			ConnectionType:   p[13],
 		}, true
+	}
+
+	if p[15] == commandCalibration {
+		return protocol.MessageAck{Command: commandCalibration, Data: append([]byte(nil), p...)}, true
 	}
 
 	if p[3] == 245 && p[4] == 1 {

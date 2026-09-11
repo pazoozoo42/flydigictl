@@ -4,3 +4,6 @@ Description=Daemon for flydigictl
 [Service]
 BusName=com.pipe01.flydigi.Gamepad
 ExecStart=/usr/bin/flydigid
+
+[Install]
+WantedBy=multi-user.target

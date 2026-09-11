@@ -9,12 +9,41 @@ enum ConnectionType {
     WIRED = 2;
 }
 
+enum BatteryState {
+    BATTERY_UNKNOWN = 0;
+    ON_BATTERY = 1;
+    CHARGING = 2;
+    CHARGED = 3;
+}
+
 message GamepadInfo {
     int32 device_id = 1;
     int32 battery_percent = 2;
     ConnectionType connection_type = 3;
     string cpu_type = 4;
     string cpu_name = 5;
+
+    // Flydigi model code ("f5", "k5", ...) as used by the firmware update API
+    string device_code = 6;
+    string device_name = 7;
+    string firmware_version = 8;
+    string dongle_version = 9;
+    string si_version = 10;
+    string rf_version = 11;
+    // 1 = legacy protocol (Vader 2/3/4, Apex 2/3/4...), 2 = new protocol (Vader 5, Apex 5...)
+    int32 protocol_version = 12;
+    BatteryState battery_state = 13;
+    string device_mac = 14;
+    string trigger_version = 15;
+    string screen_version = 16;
+    string adc_version = 17;
+}
+
+message TakeoverStatus {
+    // "Allow third-party apps to take over mappings"
+    bool enabled = 1;
+    // Name of the application currently holding the controller (e.g. "SDL" for Steam)
+    string control_by = 2;
 }
 
 message GamepadConfiguration {

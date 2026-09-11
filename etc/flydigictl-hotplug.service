@@ -1,0 +1,9 @@
+[Unit]
+Description=Flydigi controller hotplug handling (takeover setting, Steam re-detection)
+After=dbus.service
+
+[Service]
+Type=oneshot
+# Waits for the controller, re-applies the takeover setting if `flydigictl takeover auto on`
+# was set, and re-enumerates the USB device if Steam failed to pick the controller up.
+ExecStart=/usr/local/bin/flydigictl hotplug

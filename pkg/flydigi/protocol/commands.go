@@ -33,3 +33,22 @@ type CommandSendLEDConfig struct {
 	Data     []byte
 	ConfigID byte
 }
+
+// CommandGetTakeover queries whether third-party apps (Steam, reWASD...) are
+// allowed to take over the controller mappings. V2 only.
+type CommandGetTakeover struct {
+	cmd
+}
+
+// CommandSetTakeover enables or disables third-party takeover. V2 only.
+type CommandSetTakeover struct {
+	cmd
+	Enable bool
+}
+
+// CommandCalibrate starts (Start=true) or finishes (Start=false) the
+// joystick/trigger ADC calibration procedure.
+type CommandCalibrate struct {
+	cmd
+	Start bool
+}
