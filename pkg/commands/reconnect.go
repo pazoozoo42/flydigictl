@@ -24,6 +24,12 @@ driver gives up and falls back to XInput. See also "flydigictl hotplug", which
 does this automatically.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if !reconnectForce {
+			if holder := hidHolder(); holder != "" {
+				return fmt.Errorf("%q already has the controller's HID interface open, re-plugging would only disturb it (use --force to do it anyway)", holder)
+			}
+		}
+
 		if err := reconnectGamepad(); err != nil {
 			return err
 		}
@@ -112,6 +118,9 @@ func readTakeoverStatus() (*pb.TakeoverStatus, error) {
 	return dbusClient.GetTakeover()
 }
 
+var reconnectForce bool
+
 func init() {
+	reconnectCommand.Flags().BoolVar(&reconnectForce, "force", false, "re-plug even if an application already has the controller's HID interface open")
 	rootCmd.AddCommand(reconnectCommand)
 }

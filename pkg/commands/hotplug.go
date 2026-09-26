@@ -19,8 +19,9 @@ import (
 const (
 	hotplugReadyTimeout   = 20 * time.Second
 	hotplugAcquireTimeout = 4 * time.Second
-	hotplugGuardFile      = "/run/flydigictl/last-reconnect"
+	hotplugGuardFile      = "/run/flydigictl/reconnects"
 	hotplugGuardInterval  = 60 * time.Second
+	hotplugMaxReconnects  = 3
 )
 
 var hotplugCommand = &cobra.Command{
@@ -33,8 +34,8 @@ var hotplugCommand = &cobra.Command{
 2. Turns third-party takeover on if "flydigictl takeover auto on" was set.
 3. If takeover is enabled and Steam is running but no application has opened
    the controller's HID interface after a few seconds, re-enumerates the USB
-   device once (see "flydigictl reconnect") so that Steam re-detects it with
-   all buttons.`,
+   device (see "flydigictl reconnect") so that Steam re-detects it with all
+   buttons. At most 3 attempts per minute.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "hotplug: "+format+"\n", a...) }
@@ -82,12 +83,11 @@ var hotplugCommand = &cobra.Command{
 			return nil
 		}
 
-		if fi, err := os.Stat(hotplugGuardFile); err == nil && time.Since(fi.ModTime()) < hotplugGuardInterval {
-			logf("no application opened the hid interface, but the usb device was already re-enumerated %s ago; giving up", time.Since(fi.ModTime()).Round(time.Second))
+		if n := recentReconnects(); n >= hotplugMaxReconnects {
+			logf("no application opened the hid interface, but the usb device was already re-enumerated %d times in the last %s; giving up", n, hotplugGuardInterval)
 			return nil
 		}
-		os.MkdirAll(filepath.Dir(hotplugGuardFile), 0o755)
-		os.WriteFile(hotplugGuardFile, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644)
+		recordReconnect()
 
 		logf("no application opened the hid interface (controller reports %s), re-enumerating the usb device", takeoverString(status))
 		if err := reconnectGamepad(); err != nil {
@@ -108,18 +108,49 @@ func setTakeover(enable bool) (*pb.TakeoverStatus, error) {
 }
 
 // waitHIDHolder polls until some process other than flydigid has one of the controller's
-// vendor HID nodes open, returning its name, or "" when the timeout expires.
+// vendor HID nodes open and keeps it open, returning its name, or "" when the timeout
+// expires. A node that is only open briefly doesn't count: that is Steam's driver probing
+// the controller and giving up.
 func waitHIDHolder(timeout time.Duration) string {
 	deadline := time.Now().Add(timeout)
 	for {
 		if holder := hidHolder(); holder != "" {
-			return holder
+			time.Sleep(1500 * time.Millisecond)
+			if again := hidHolder(); again != "" {
+				return again
+			}
 		}
 		if time.Now().After(deadline) {
 			return ""
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// recentReconnects returns how many re-enumerations the hotplug handler did during the
+// last hotplugGuardInterval.
+func recentReconnects() int {
+	data, err := os.ReadFile(hotplugGuardFile)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(line)); err == nil && time.Since(t) < hotplugGuardInterval {
+			n++
+		}
+	}
+	return n
+}
+
+func recordReconnect() {
+	os.MkdirAll(filepath.Dir(hotplugGuardFile), 0o755)
+	f, err := os.OpenFile(hotplugGuardFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, time.Now().Format(time.RFC3339))
 }
 
 // hidHolder returns the name of a process (other than us and flydigid) that has a Flydigi

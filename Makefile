@@ -33,8 +33,9 @@ DECK ?= deck@steamdeck
 DECK_DIR ?= flydigictl-install
 deck-deploy: build-linux
 	ssh $(DECK) 'mkdir -p ~/$(DECK_DIR)'
-	scp build/flydigid build/flydigictl $(SRC)/etc/flydigid.conf $(SRC)/etc/flydigid.service $(SRC)/etc/com.pipe01.flydigi.Gamepad.service \
-		$(SRC)/etc/70-flydigi.rules $(SRC)/etc/flydigictl-hotplug.service $(SRC)/etc/deck-install.sh $(DECK):$(DECK_DIR)/
+	scp build/flydigid build/flydigictl $(SRC)/etc/flydigid.conf $(SRC)/etc/flydigid.service \
+		$(SRC)/etc/70-flydigi.rules $(SRC)/etc/flydigictl-hotplug.service $(SRC)/etc/flydigictl-setup.service \
+		$(SRC)/etc/deck-install.sh $(SRC)/etc/deck-setup.sh $(DECK):$(DECK_DIR)/
 	ssh -t $(DECK) 'if [ "$$(id -u)" = 0 ]; then bash ~/$(DECK_DIR)/deck-install.sh; else sudo bash ~/$(DECK_DIR)/deck-install.sh; fi'
 
 deb-clean:

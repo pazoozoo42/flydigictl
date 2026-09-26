@@ -1,0 +1,12 @@
+[Unit]
+Description=Re-install flydigictl system files after a SteamOS update
+Before=flydigid.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/flydigictl/deck-setup.sh
+
+[Install]
+WantedBy=multi-user.target

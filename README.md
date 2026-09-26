@@ -31,7 +31,9 @@ No toolchain is needed on the Deck. From a machine with Go installed:
 make deck-deploy DECK=root@<deck-ip>
 ```
 
-This cross-compiles, copies the binaries to `/usr/local/bin`, installs the DBus policy, systemd units and udev rule (temporarily disabling `steamos-readonly`) and starts `flydigid`. Root SSH access to the Deck is required.
+This cross-compiles and copies the binaries and config to `/opt/flydigictl` on the Deck (SteamOS keeps `/opt` across OS updates), then runs `deck-setup.sh`, which installs the systemd units, DBus policy, udev rule and `/usr/local/bin` symlinks and starts `flydigid`. Use `DECK=deck@<ip>` for a normal user with `sudo` (run from a terminal, it prompts for the password) or `DECK=root@<ip>`.
+
+SteamOS updates replace the root filesystem and drop most of that again, so `flydigictl-setup.service` re-runs `deck-setup.sh` at every boot and puts everything back. If a command is ever missing after an update, `sudo /opt/flydigictl/deck-setup.sh --restart` repairs the install by hand.
 
 ### Debian, Ubuntu and other Debian-based distros
 
@@ -79,7 +81,7 @@ flydigictl takeover auto on  # re-enable it automatically every time a controlle
 
 Right after the cable is plugged in the controller takes a moment to boot and doesn't answer requests yet. Steam's Flydigi driver only tries once, in the first ~100 ms, so it frequently gives up and falls back to the plain XInput interface: the controller shows up as *Generic X-Box pad* and the back buttons don't work, even though takeover is enabled. Once the controller is up, re-plugging fixes it.
 
-`flydigictl reconnect` does that re-plug in software (it re-enumerates the USB device, the controller isn't power-cycled), and `flydigictl-hotplug.service`, started by a udev rule on every connect, does it automatically: it waits for the controller to answer, applies `takeover auto` if set, and if takeover is enabled and Steam is running but no application has opened the controller's HID interface after a few seconds, it re-enumerates the device once. Disable with `systemctl mask flydigictl-hotplug.service`.
+`flydigictl reconnect` does that re-plug in software (it re-enumerates the USB device, the controller isn't power-cycled), and `flydigictl-hotplug.service`, started by a udev rule on every connect, does it automatically: it waits for the controller to answer, applies `takeover auto` if set, and if takeover is enabled and Steam is running but no application has opened the controller's HID interface after a few seconds, it re-enumerates the device (up to 3 times per minute; the wireless dongle is slow to answer after a re-plug and sometimes needs a second try). `flydigictl reconnect` refuses to re-plug while Steam already has the interface open, use `--force` to do it anyway. Disable with `systemctl mask flydigictl-hotplug.service`.
 
 ```
 flydigictl reconnect         # software re-plug, then shows who holds the controller
